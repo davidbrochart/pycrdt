@@ -179,7 +179,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - id: changelog
-      uses: agronholm/release-notes@v1
+      uses: agronholm/release-notes@1.0.1
       with:
         path: CHANGELOG.md
         version_pattern: ^\#\# ([0-9][^*]*)\n
