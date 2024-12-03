@@ -9,7 +9,7 @@ pub fn merge_updates(updates: &Bound<'_, PyTuple>) -> PyResult<PyObject> {
     let Ok(update) = merge_updates_v1(&updates) else {
         return Err(PyValueError::new_err("Cannot merge updates"));
     };
-    let bytes: PyObject = Python::with_gil(|py| PyBytes::new_bound(py, &update).into());
+    let bytes: PyObject = Python::with_gil(|py| PyBytes::new(py, &update).into());
     Ok(bytes)
 }
 
@@ -21,7 +21,7 @@ pub fn get_state(update: &Bound<'_, PyBytes>) -> PyResult<PyObject> {
             "Cannot encode state vector from update",
         ));
     };
-    let bytes: PyObject = Python::with_gil(|py| PyBytes::new_bound(py, &u).into());
+    let bytes: PyObject = Python::with_gil(|py| PyBytes::new(py, &u).into());
     Ok(bytes)
 }
 
@@ -32,6 +32,6 @@ pub fn get_update(update: &Bound<'_, PyBytes>, state: &Bound<'_, PyBytes>) -> Py
     let Ok(u) = diff_updates_v1(&update, &state) else {
         return Err(PyValueError::new_err("Cannot diff updates"));
     };
-    let bytes: PyObject = Python::with_gil(|py| PyBytes::new_bound(py, &u).into());
+    let bytes: PyObject = Python::with_gil(|py| PyBytes::new(py, &u).into());
     Ok(bytes)
 }

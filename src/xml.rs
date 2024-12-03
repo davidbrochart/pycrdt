@@ -1,6 +1,6 @@
-
-use pyo3::types::{PyAnyMethods, PyDict, PyIterator, PyList, PyString, PyTuple};
-use pyo3::{pyclass, pymethods, Bound, IntoPy as _, PyAny, PyObject, PyResult, Python};
+use pyo3::prelude::*;
+use pyo3::types::{PyBool, PyDict, PyIterator, PyList, PyString, PyTuple};
+use pyo3::{pyclass, pymethods, Bound, PyAny, PyObject, PyResult, Python};
 use yrs::types::text::YChange;
 use yrs::types::xml::{XmlEvent as _XmlEvent, XmlTextEvent as _XmlTextEvent};
 use yrs::{
@@ -8,8 +8,8 @@ use yrs::{
 };
 
 use crate::subscription::Subscription;
-use crate::type_conversions::{events_into_py, py_to_any, py_to_attrs, EntryChangeWrapper};
-use crate::{transaction::Transaction, type_conversions::ToPython};
+use crate::type_conversions::{events_into_py, py_to_any, py_to_attrs, EntryChangeWrapper, DeltaToPython, ChangeToPython, PathToPython, ToPython};
+use crate::{transaction::Transaction};
 
 /// Implements methods common to `XmlFragment`, `XmlElement`, and `XmlText`.
 macro_rules! impl_xml_methods {
@@ -27,8 +27,13 @@ macro_rules! impl_xml_methods {
     ) => {
         #[pymethods]
         impl $typ {
-            fn parent(&self, py: Python<'_>) -> PyObject {
-                self.$inner.parent().into_py(py)
+            fn parent<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
+                let parent = self.$inner.parent();
+                if parent.is_some() {
+                    parent.unwrap().into_py(py)
+                } else {
+                    py.None().into_bound(py)
+                }
             }
 
             fn get_string(&self, txn: &mut Transaction) -> String {
@@ -46,11 +51,11 @@ macro_rules! impl_xml_methods {
             }
 
             $(
-                fn get(&self, py: Python<'_>, txn: &mut Transaction, index: u32) -> PyObject {
+                fn get<'py>(&self, py: Python<'py>, txn: &mut Transaction, index: u32) -> Bound<'py, PyAny> {
                     let mut t0 = txn.transaction();
                     let t1 = t0.as_mut().unwrap();
                     let t = t1.as_ref();
-                    self.$finner.get(t, index).into_py(py)
+                    self.$finner.get(t, index).unwrap().into_py(py)
                 }
 
                 fn remove_range(&self, txn: &mut Transaction, index: u32, len: u32) {
@@ -99,7 +104,7 @@ macro_rules! impl_xml_methods {
                     self.$xinner.remove_attribute(&mut t, &name);
                 }
 
-                fn siblings(&self, py: Python<'_>, txn: &mut Transaction) -> Vec<PyObject> {
+                fn siblings<'py>(&self, py: Python<'py>, txn: &mut Transaction) -> Vec<Bound<'py, PyAny>> {
                     let mut t0 = txn.transaction();
                     let t1 = t0.as_mut().unwrap();
                     let t = t1.as_ref();
@@ -146,7 +151,7 @@ impl_xml_methods!(XmlFragment[fragment, fragment: fragment] {
     fn observe_deep(&self, f: PyObject) -> Subscription {
         self.fragment.observe_deep(move |txn, events| {
             Python::with_gil(|py| {
-                let events = events_into_py(txn, events);
+                let events = events_into_py(py, txn, events);
                 if let Err(err) = f.call1(py, (events,)) {
                     err.restore(py);
                 }
@@ -186,7 +191,7 @@ impl_xml_methods!(XmlElement[element, fragment: element, xml: element] {
     fn observe_deep(&self, f: PyObject) -> Subscription {
         self.element.observe_deep(move |txn, events| {
             Python::with_gil(|py| {
-                let events = events_into_py(txn, events);
+                let events = events_into_py(py, txn, events);
                 if let Err(err) = f.call1(py, (events,)) {
                     err.restore(py);
                 }
@@ -258,26 +263,26 @@ impl_xml_methods!(XmlText[text, xml: text] {
             .into_iter()
             .map(|diff| {
                 let attrs = diff.attributes.map(|attrs| {
-                    let pyattrs = PyDict::new_bound(py);
+                    let pyattrs = PyDict::new(py);
                     for (name, value) in attrs.into_iter() {
                         pyattrs.set_item(
-                            PyString::intern_bound(py, &*name),
+                            PyString::intern(py, &*name),
                             value.into_py(py),
                         ).unwrap();
                     }
-                    pyattrs.into_any().unbind()
-                }).unwrap_or_else(|| py.None());
+                    pyattrs.into_any()
+                }).unwrap_or_else(|| py.None().into_bound(py));
 
-                PyTuple::new_bound(py, [
+                PyTuple::new(py, [
                     diff.insert.into_py(py),
                     attrs,
-                ])
+                ]).unwrap()
             });
 
-        PyList::new_bound(
+        PyList::new(
             py,
             iter
-        )
+        ).unwrap()
     }
 
     fn observe(&self, f: PyObject) -> Subscription {
@@ -301,7 +306,7 @@ impl_xml_methods!(XmlText[text, xml: text] {
 #[pyclass(unsendable)]
 pub struct XmlEvent {
     txn: *const TransactionMut<'static>,
-    transaction: Option<PyObject>,
+    transaction: Option<Py<Transaction>>,
     #[pyo3(get)]
     children_changed: PyObject,
     #[pyo3(get)]
@@ -315,25 +320,25 @@ pub struct XmlEvent {
 }
 
 impl XmlEvent {
-    pub unsafe fn from_xml_event(event: &_XmlEvent, txn: &TransactionMut, py: Python<'_>) -> Self {
+    pub unsafe fn from_xml_event<'py>(event: &_XmlEvent, txn: &TransactionMut, py: Python<'py>) -> Self {
         Self {
             txn: unsafe { std::mem::transmute::<&TransactionMut, &TransactionMut<'static>>(txn) },
             transaction: None,
-            children_changed: event.children_changed().into_py(py),
-            target: event.target().clone().into_py(py),
-            path: event.path().clone().into_py(py),
-            delta: PyList::new_bound(
+            children_changed: PyBool::new(py, event.children_changed()).to_owned().as_any().clone().unbind(),
+            target: event.target().clone().into_py(py).unbind(),
+            path: event.path().clone().into_py(py).as_any().clone().unbind(),
+            delta: PyList::new(
                 py,
                 event.delta(txn).into_iter().map(|d| d.into_py(py)),
             )
-            .into(),
+            .unwrap().as_any().clone().unbind(),
             keys: {
-                let dict = PyDict::new_bound(py);
+                let dict = PyDict::new(py);
                 for (key, value) in event.keys(txn).iter() {
-                    dict.set_item(&**key, EntryChangeWrapper(value).into_py(py))
+                    dict.set_item(&**key, EntryChangeWrapper(value))
                         .unwrap();
                 }
-                dict.into()
+                dict.as_any().clone().unbind()
             },
         }
     }
@@ -342,20 +347,19 @@ impl XmlEvent {
         Self {
             txn: unsafe { std::mem::transmute::<&TransactionMut, &TransactionMut<'static>>(txn) },
             transaction: None,
-            target: XmlOut::Text(event.target().clone()).into_py(py),
-            path: event.path().clone().into_py(py),
-            delta: PyList::new_bound(
+            target: XmlOut::Text(event.target().clone()).into_py(py).unbind(),
+            path: event.path().clone().into_py(py).as_any().clone().unbind(),
+            delta: PyList::new(
                 py,
                 event.delta(txn).into_iter().map(|d| d.clone().into_py(py)),
-            )
-            .into(),
+            ).unwrap().as_any().clone().unbind(),
             keys: {
-                let dict = PyDict::new_bound(py);
+                let dict = PyDict::new(py);
                 for (key, value) in event.keys(txn).iter() {
-                    dict.set_item(&**key, EntryChangeWrapper(value).into_py(py))
+                    dict.set_item(&**key, EntryChangeWrapper(value))
                         .unwrap();
                 }
-                dict.into()
+                dict.as_any().clone().unbind()
             },
             children_changed: py.None(),
         }
@@ -365,9 +369,9 @@ impl XmlEvent {
 #[pymethods]
 impl XmlEvent {
     #[getter]
-    fn transaction(&mut self, py: Python<'_>) -> PyObject {
+    fn transaction(&mut self, py: Python<'_>) -> Py<Transaction> {
         self.transaction
-            .get_or_insert_with(|| Transaction::from(unsafe { &*self.txn }).into_py(py))
+            .get_or_insert_with(|| Transaction::from(unsafe { &*self.txn }).into_pyobject(py).unwrap().unbind())
             .clone_ref(py)
     }
 

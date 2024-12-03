@@ -10,7 +10,7 @@ use yrs::{
 use yrs::types::text::{TextEvent as _TextEvent, YChange};
 use crate::transaction::Transaction;
 use crate::subscription::Subscription;
-use crate::type_conversions::{py_to_any, py_to_attrs, ToPython};
+use crate::type_conversions::{py_to_any, py_to_attrs, DeltaToPython, PathToPython, ToPython};
 
 
 #[pyclass]
@@ -83,7 +83,7 @@ impl Text {
         let t1 = t0.as_mut().unwrap();
         let t = t1.as_ref();
         let s = self.text.get_string(t);
-        Python::with_gil(|py| PyString::new_bound(py, &s).into())
+        Python::with_gil(|py| PyString::new(py, &s).into())
     }
 
     fn diff<'py>(&self, py: Python<'py>, txn: &mut Transaction) -> Bound<'py, PyList> {
@@ -95,26 +95,24 @@ impl Text {
             .into_iter()
             .map(|diff| {
                 let attrs = diff.attributes.map(|attrs| {
-                    let pyattrs = PyDict::new_bound(py);
+                    let pyattrs = PyDict::new(py);
                     for (name, value) in attrs.into_iter() {
                         pyattrs.set_item(
-                            PyString::intern_bound(py, &*name),
+                            PyString::intern(py, &*name),
                             value.into_py(py),
                         ).unwrap();
                     }
-                    pyattrs.into_any().unbind()
-                }).unwrap_or_else(|| py.None());
+                    pyattrs.into_any()
+                }).unwrap_or_else(|| py.None().into_bound(py));
                 
-                PyTuple::new_bound(py, [
+                PyTuple::new(py, [
                     diff.insert.into_py(py),
                     attrs,
-                ])
+                ]).unwrap()
             });
 
-        PyList::new_bound(
-            py,
-            iter
-        )
+        let res = PyList::new(py, iter);
+        res.unwrap()
     }
 
     fn observe(&mut self, py: Python<'_>, f: PyObject) -> PyResult<Py<Subscription>> {
@@ -149,7 +147,7 @@ impl TextEvent {
     pub fn new(event: &_TextEvent, txn: &TransactionMut) -> Self {
         let event = event as *const _TextEvent;
         let txn = unsafe { std::mem::transmute::<&TransactionMut, &TransactionMut<'static>>(txn) };
-        let mut text_event = TextEvent {
+        let text_event = TextEvent {
             event,
             txn,
             target: None,
@@ -157,11 +155,6 @@ impl TextEvent {
             path: None,
             transaction: None,
         };
-        Python::with_gil(|py| {
-            text_event.target(py);
-            text_event.path(py);
-            text_event.delta(py);
-        });
         text_event
     }
 
@@ -181,10 +174,9 @@ impl TextEvent {
         if let Some(transaction) = &self.transaction {
             transaction.clone_ref(py)
         } else {
-            let transaction: PyObject = Transaction::from(self.txn()).into_py(py);
-            let res = transaction.clone_ref(py);
-            self.transaction = Some(transaction);
-            res
+            let transaction = Py::new(py, Transaction::from(self.txn())).unwrap();
+            self.transaction = Some(transaction.as_any().clone_ref(py));
+            transaction.as_any().clone_ref(py)
         }
     }
 
@@ -193,10 +185,9 @@ impl TextEvent {
         if let Some(target) = &self.target {
             target.clone_ref(py)
         } else {
-            let target: PyObject = Text::from(self.event().target().clone()).into_py(py);
-            let res = target.clone_ref(py);
-            self.target = Some(target);
-            res
+            let target = Py::new(py, Text::from(self.event().target().clone())).unwrap();
+            self.target = Some(target.as_any().clone_ref(py));
+            target.as_any().clone_ref(py)
         }
     }
 
@@ -205,10 +196,10 @@ impl TextEvent {
         if let Some(path) = &self.path {
             path.clone_ref(py)
         } else {
-            let path: PyObject = self.event().path().into_py(py);
-            let res = path.clone_ref(py);
-            self.path = Some(path);
-            res
+            let path1 = self.event().path().into_py(py).unbind();
+            let path2 = path1.as_any();
+            self.path = Some(path2.clone_ref(py));
+            path2.clone_ref(py)
         }
     }
 
@@ -217,24 +208,18 @@ impl TextEvent {
         if let Some(delta) = &self.delta {
             delta.clone_ref(py)
         } else {
-            let delta: PyObject = {
+            let delta = {
                 let delta =
                     self.event()
                         .delta(self.txn())
                         .into_iter()
                         .map(|d| d.clone().into_py(py));
-                PyList::new_bound(py, delta).into()
+                delta
             };
-            let res = delta.clone_ref(py);
-            self.delta = Some(delta);
-            res
+            let delta = PyList::new(py, delta).unwrap();
+            let delta = delta.as_any();
+            self.delta = Some(delta.clone().unbind());
+            delta.clone().unbind()
         }
-    }
-
-    fn __repr__(&mut self, py: Python<'_>) -> String {
-        let target = self.target(py);
-        let delta = self.delta(py);
-        let path = self.path(py);
-        format!("TextEvent(target={target}, delta={delta}, path={path})")
     }
 }

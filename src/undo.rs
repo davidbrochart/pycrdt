@@ -79,20 +79,20 @@ impl UndoManager {
         self.undo_manager.clear();
     }
 
-    pub fn undo_stack(&mut self, py: Python<'_>) -> Py<PyList> {
+    pub fn undo_stack<'py>(&mut self, py: Python<'py>) -> Bound<'py, PyList> {
         let elements = self.undo_manager.undo_stack().into_iter().map(|v| {
             StackItem::from(v.clone())
         });
-        let res = PyList::new_bound(py, elements);
-        res.into()
+        let res = PyList::new(py, elements);
+        res.unwrap()
     }
 
-    pub fn redo_stack(&mut self, py: Python<'_>) -> Py<PyList> {
+    pub fn redo_stack<'py>(&mut self, py: Python<'py>) -> Bound<'py, PyList> {
         let elements = self.undo_manager.redo_stack().into_iter().map(|v| {
             StackItem::from(v.clone())
         });
-        let res = PyList::new_bound(py, elements);
-        res.into()
+        let res = PyList::new(py, elements);
+        res.unwrap()
     }
 }
 

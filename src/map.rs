@@ -10,7 +10,7 @@ use yrs::types::array::ArrayPrelim;
 use yrs::types::map::{MapPrelim, MapEvent as _MapEvent};
 use crate::transaction::Transaction;
 use crate::subscription::Subscription;
-use crate::type_conversions::{EntryChangeWrapper, events_into_py, py_to_any, ToPython};
+use crate::type_conversions::{EntryChangeWrapper, events_into_py, py_to_any, PathToPython, ToPython};
 use crate::text::Text;
 use crate::array::Array;
 use crate::doc::Doc;
@@ -50,36 +50,36 @@ impl Map {
         }
     }
 
-    fn insert_text_prelim(&self, txn: &mut Transaction, key: &str) -> PyResult<PyObject> {
+    fn insert_text_prelim(&self, txn: &mut Transaction, key: &str) -> PyResult<Text> {
         let mut _t = txn.transaction();
         let mut t = _t.as_mut().unwrap().as_mut();
         let integrated = self.map.insert(&mut t, key, TextPrelim::new(""));
         let shared = Text::from(integrated);
-        Python::with_gil(|py| { Ok(shared.into_py(py)) })
+        Ok(shared)
     }
 
-    fn insert_array_prelim(&self, txn: &mut Transaction, key: &str) -> PyResult<PyObject> {
+    fn insert_array_prelim(&self, txn: &mut Transaction, key: &str) -> PyResult<Array> {
         let mut _t = txn.transaction();
         let mut t = _t.as_mut().unwrap().as_mut();
         let integrated = self.map.insert(&mut t, key, ArrayPrelim::default());
         let shared = Array::from(integrated);
-        Python::with_gil(|py| { Ok(shared.into_py(py)) })
+        Ok(shared)
     }
 
-    fn insert_map_prelim(&self, txn: &mut Transaction, key: &str) -> PyResult<PyObject> {
+    fn insert_map_prelim(&self, txn: &mut Transaction, key: &str) -> PyResult<Map> {
         let mut _t = txn.transaction();
         let mut t = _t.as_mut().unwrap().as_mut();
         let integrated = self.map.insert(&mut t, key, MapPrelim::default());
         let shared = Map::from(integrated);
-        Python::with_gil(|py| { Ok(shared.into_py(py)) })
+        Ok(shared)
     }
 
-    fn insert_xmlfragment_prelim(&self, txn: &mut Transaction, key: &str) -> PyResult<PyObject> {
+    fn insert_xmlfragment_prelim(&self, txn: &mut Transaction, key: &str) -> PyResult<XmlFragment> {
         let mut _t = txn.transaction();
         let mut t = _t.as_mut().unwrap().as_mut();
         let integrated = self.map.insert(&mut t, key, XmlFragmentPrelim::default());
         let shared = XmlFragment::from(integrated);
-        Python::with_gil(|py| { Ok(shared.into_py(py)) })
+        Ok(shared)
     }
 
     fn insert_xmlelement_prelim(&self, _txn: &mut Transaction, _key: &str) -> PyResult<PyObject> {
@@ -107,7 +107,7 @@ impl Map {
         Ok(())
     }
 
-    fn get(&self, txn: &mut Transaction, key: &str) -> PyResult<PyObject> {
+    fn get<'py>(&self, py: Python<'py>, txn: &mut Transaction, key: &str) -> PyResult<Bound<'py, PyAny>> {
         let mut t0 = txn.transaction();
         let t1 = t0.as_mut().unwrap();
         let t = t1.as_ref();
@@ -115,11 +115,11 @@ impl Map {
         if v == None {
             Err(PyValueError::new_err("Key error"))
         } else {
-            Python::with_gil(|py| { Ok(v.unwrap().into_py(py)) })
+            Ok(v.unwrap().into_py(py))
         }
     }
 
-    fn keys(&self, txn: &mut Transaction) -> PyObject {
+    fn keys<'py>(&self, py: Python<'py>, txn: &mut Transaction) -> Bound<'py, PyList> {
         let mut t0 = txn.transaction();
         let t1 = t0.as_mut().unwrap();
         let t = t1.as_ref();
@@ -128,7 +128,7 @@ impl Map {
         for k in it {
             v.push(k.into());
         }
-        Python::with_gil(|py| { PyList::new_bound(py, v).into() })
+        PyList::new(py, v).unwrap()
     }
 
     fn to_json(&mut self, txn: &mut Transaction) -> PyObject {
@@ -137,7 +137,7 @@ impl Map {
         let t = t1.as_ref();
         let mut s = String::new();
         self.map.to_json(t).to_json(&mut s);
-        Python::with_gil(|py| PyString::new_bound(py, s.as_str()).into())
+        Python::with_gil(|py| PyString::new(py, s.as_str()).into())
     }
 
     pub fn observe(&mut self, py: Python<'_>, f: PyObject) -> PyResult<Py<Subscription>> {
@@ -154,11 +154,11 @@ impl Map {
         Ok(s)
     }
 
-    pub fn observe_deep(&mut self, py: Python<'_>, f: PyObject) -> PyResult<Py<Subscription>> {
+    pub fn observe_deep<'py>(&mut self, py: Python<'py>, f: PyObject) -> PyResult<Py<Subscription>> {
         let sub = self.map
             .observe_deep(move |txn, events| {
                 Python::with_gil(|py| {
-                    let events = events_into_py(txn, events);
+                    let events = events_into_py(py, txn, events);
                     if let Err(err) = f.call1(py, (events,)) {
                         err.restore(py)
                     }
@@ -183,7 +183,7 @@ impl MapEvent {
     pub fn new(event: &_MapEvent, txn: &TransactionMut) -> Self {
         let event = event as *const _MapEvent;
         let txn = unsafe { std::mem::transmute::<&TransactionMut, &TransactionMut<'static>>(txn) };
-        let mut map_event = MapEvent {
+        let map_event = MapEvent {
             event,
             txn,
             target: None,
@@ -191,11 +191,6 @@ impl MapEvent {
             path: None,
             transaction: None,
         };
-        Python::with_gil(|py| {
-            map_event.target(py);
-            map_event.path(py);
-            map_event.keys(py);
-        });
         map_event
     }
 
@@ -215,10 +210,9 @@ impl MapEvent {
         if let Some(transaction) = &self.transaction {
             transaction.clone_ref(py)
         } else {
-            let transaction: PyObject = Transaction::from(self.txn()).into_py(py);
-            let res = transaction.clone_ref(py);
-            self.transaction = Some(transaction);
-            res
+            let transaction = Py::new(py, Transaction::from(self.txn())).unwrap();
+            self.transaction = Some(transaction.as_any().clone_ref(py));
+            transaction.as_any().clone_ref(py)
         }
     }
 
@@ -227,10 +221,9 @@ impl MapEvent {
         if let Some(target) = &self.target {
             target.clone_ref(py)
         } else {
-            let target: PyObject = Map::from(self.event().target().clone()).into_py(py);
-            let res = target.clone_ref(py);
-            self.target = Some(target);
-            res
+            let target = Py::new(py, Map::from(self.event().target().clone())).unwrap();
+            self.target = Some(target.as_any().clone_ref(py));
+            target.as_any().clone_ref(py)
         }
     }
 
@@ -239,38 +232,47 @@ impl MapEvent {
         if let Some(path) = &self.path {
             path.clone_ref(py)
         } else {
-            let path: PyObject = self.event().path().into_py(py);
-            let res = path.clone_ref(py);
-            self.path = Some(path);
-            res
+            let path1 = self.event().path().into_py(py).unbind();
+            let path2 = path1.as_any();
+            self.path = Some(path2.clone_ref(py));
+            path2.clone_ref(py)
         }
     }
 
     #[getter]
-    pub fn keys(&mut self, py: Python<'_>) -> PyObject {
+    pub fn keys<'py>(&mut self, py: Python<'py>) -> PyObject  {
+        //if let Some(delta) = &self.delta {
+        //    delta.clone_ref(py)
+        //} else {
+        //    let delta = {
+        //        let delta =
+        //            self.event()
+        //                .delta(self.txn())
+        //                .into_iter()
+        //                .map(|d| d.clone().into_py(py));
+        //        delta
+        //    };
+        //    let delta = PyList::new(py, delta).unwrap();
+        //    let delta = delta.as_any();
+        //    self.delta = Some(delta.clone().unbind());
+        //    delta.clone().unbind()
+        //}
         if let Some(keys) = &self.keys {
             keys.clone_ref(py)
         } else {
-            let keys: PyObject = {
+            let keys = {
                 let keys = self.event().keys(self.txn());
-                let result = PyDict::new_bound(py);
+                let result = PyDict::new(py);
                 for (key, value) in keys.iter() {
                     let key = &**key;
                     let value = EntryChangeWrapper(value);
-                    result.set_item(key, value.into_py(py)).unwrap();
+                    result.set_item(key, value.into_pyobject(py).unwrap()).unwrap();
                 }
-                result.into()
+                result.unbind()
             };
-            let res = keys.clone_ref(py);
-            self.keys = Some(keys);
-            res
+            let keys = keys.as_any();
+            self.keys = Some(keys.clone_ref(py));
+            keys.clone_ref(py)
         }
-    }
-
-    fn __repr__(&mut self, py: Python<'_>) -> String {
-        let target = self.target(py);
-        let keys = self.keys(py);
-        let path = self.path(py);
-        format!("MapEvent(target={target}, keys={keys}, path={path})")
     }
 }
