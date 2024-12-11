@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, cast
+from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar, cast, overload
 
 from ._base import BaseDoc, BaseEvent, BaseType, base_types, event_types
 from ._pycrdt import Array as _Array
@@ -10,18 +10,20 @@ from ._pycrdt import Subscription
 if TYPE_CHECKING:
     from ._doc import Doc
 
+T = TypeVar("T")
 
-class Array(BaseType):
+
+class Array(BaseType, Generic[T]):
     """
     A collection used to store data in an indexed sequence structure, similar to a Python `list`.
     """
 
-    _prelim: list | None
+    _prelim: list[T] | None
     _integrated: _Array | None
 
     def __init__(
         self,
-        init: list | None = None,
+        init: list[T] | None = None,
         *,
         _doc: Doc | None = None,
         _integrated: _Array | None = None,
@@ -42,14 +44,14 @@ class Array(BaseType):
             _integrated=_integrated,
         )
 
-    def _init(self, value: list[Any] | None) -> None:
+    def _init(self, value: list[T] | None) -> None:
         if value is None:
             return
         with self.doc.transaction():
             for i, v in enumerate(value):
                 self._set(i, v)
 
-    def _set(self, index: int, value: Any) -> None:
+    def _set(self, index: int, value: T) -> None:
         with self.doc.transaction() as txn:
             self._forbid_read_transaction(txn)
             if isinstance(value, BaseDoc):
@@ -79,7 +81,7 @@ class Array(BaseType):
         with self.doc.transaction() as txn:
             return self.integrated.len(txn._txn)
 
-    def append(self, value: Any) -> None:
+    def append(self, value: T) -> None:
         """
         Appends an item to the array.
 
@@ -89,7 +91,7 @@ class Array(BaseType):
         with self.doc.transaction():
             self += [value]
 
-    def extend(self, value: list[Any]) -> None:
+    def extend(self, value: list[T]) -> None:
         """
         Extends the array with a list of items.
 
@@ -105,7 +107,7 @@ class Array(BaseType):
         """
         del self[:]
 
-    def insert(self, index: int, object: Any) -> None:
+    def insert(self, index: int, object: T) -> None:
         """
         Inserts an item at a given index in the array.
 
@@ -115,7 +117,7 @@ class Array(BaseType):
         """
         self[index:index] = [object]
 
-    def pop(self, index: int = -1) -> Any:
+    def pop(self, index: int = -1) -> T:
         """
         Removes the item at the given index from the array, and returns it.
         If no index is passed, removes and returns the last item.
@@ -148,7 +150,7 @@ class Array(BaseType):
             destination_index = self._check_index(destination_index)
             self.integrated.move_to(txn._txn, source_index, destination_index)
 
-    def __add__(self, value: list[Any]) -> Array:
+    def __add__(self, value: list[T]) -> Array[T]:
         """
         Extends the array with a list of items:
         ```py
@@ -168,7 +170,7 @@ class Array(BaseType):
             self[length:length] = value
             return self
 
-    def __radd__(self, value: list[Any]) -> Array:
+    def __radd__(self, value: list[T]) -> Array[T]:
         """
         Prepends a list of items to the array:
         ```py
@@ -187,7 +189,13 @@ class Array(BaseType):
             self[0:0] = value
             return self
 
-    def __setitem__(self, key: int | slice, value: Any | list[Any]) -> None:
+    @overload
+    def __setitem__(self, key: int, value: T) -> None: ...
+
+    @overload
+    def __setitem__(self, key: slice, value: list[T]) -> None: ...
+
+    def __setitem__(self, key, value):
         """
         Replaces the item at the given index with a new item:
         ```py
@@ -271,7 +279,13 @@ class Array(BaseType):
                     f"Array indices must be integers or slices, not {type(key).__name__}"
                 )
 
-    def __getitem__(self, key: int) -> BaseType:
+    @overload
+    def __getitem__(self, key: int) -> T: ...
+
+    @overload
+    def __getitem__(self, key: slice) -> list[T]: ...
+
+    def __getitem__(self, key):
         """
         Gets the item at the given index:
         ```py
@@ -304,7 +318,7 @@ class Array(BaseType):
         """
         return ArrayIterator(self)
 
-    def __contains__(self, item: Any) -> bool:
+    def __contains__(self, item: T) -> bool:
         """
         Checks if the given item is in the array:
         ```py
@@ -333,7 +347,7 @@ class Array(BaseType):
         with self.doc.transaction() as txn:
             return self.integrated.to_json(txn._txn)
 
-    def to_py(self) -> list | None:
+    def to_py(self) -> list[T] | None:
         """
         Recursively converts the array's items to Python objects, and
         returns them in a list. If the array was not yet inserted in a document,

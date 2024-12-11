@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, Iterable, cast
+from typing import TYPE_CHECKING, Callable, Generic, Iterable, TypeVar, cast, overload
 
 from ._base import BaseDoc, BaseEvent, BaseType, base_types, event_types
 from ._pycrdt import Map as _Map
@@ -10,8 +10,11 @@ from ._pycrdt import Subscription
 if TYPE_CHECKING:
     from ._doc import Doc
 
+T = TypeVar("T")
+T_DefaultValue = TypeVar("T_DefaultValue")
 
-class Map(BaseType):
+
+class Map(BaseType, Generic[T]):
     """
     A collection used to store key-value entries in an unordered manner, similar to a Python `dict`.
     """
@@ -21,7 +24,7 @@ class Map(BaseType):
 
     def __init__(
         self,
-        init: dict | None = None,
+        init: dict[str, T] | None = None,
         *,
         _doc: Doc | None = None,
         _integrated: _Map | None = None,
@@ -42,14 +45,14 @@ class Map(BaseType):
             _integrated=_integrated,
         )
 
-    def _init(self, value: dict[str, Any] | None) -> None:
+    def _init(self, value: dict[str, T] | None) -> None:
         if value is None:
             return
         with self.doc.transaction():
             for k, v in value.items():
                 self._set(k, v)
 
-    def _set(self, key: str, value: Any) -> None:
+    def _set(self, key: str, value: T) -> None:
         with self.doc.transaction() as txn:
             self._forbid_read_transaction(txn)
             if isinstance(value, BaseDoc):
@@ -91,7 +94,7 @@ class Map(BaseType):
         with self.doc.transaction() as txn:
             return self.integrated.to_json(txn._txn)
 
-    def to_py(self) -> dict | None:
+    def to_py(self) -> dict[str, T] | None:
         """
         Recursively converts the map's items to Python objects, and
         returns them in a `dict`. If the map was not yet inserted in a document,
@@ -128,7 +131,7 @@ class Map(BaseType):
             self._check_key(key)
             self.integrated.remove(txn._txn, key)
 
-    def __getitem__(self, key: str) -> Any:
+    def __getitem__(self, key: str) -> T:
         """
         Gets the value at the given key:
         ```py
@@ -143,7 +146,7 @@ class Map(BaseType):
             self._check_key(key)
             return self._maybe_as_type_or_doc(self.integrated.get(txn._txn, key))
 
-    def __setitem__(self, key: str, value: Any) -> None:
+    def __setitem__(self, key: str, value: T) -> None:
         """
         Sets a value at the given key:
         ```py
@@ -192,24 +195,38 @@ class Map(BaseType):
         """
         return item in self.keys()
 
-    def get(self, key: str, default_value: Any | None = None) -> Any | None:
+    @overload
+    def get(self, key: str) -> T | None: ...
+
+    @overload
+    def get(self, key: str, default_value: T_DefaultValue) -> T | T_DefaultValue: ...
+
+    def get(self, *args):
         """
         Returns the value corresponding to the given key if it exists, otherwise
-        returns the `default_value`.
+        returns the default value if passed, or `None`.
 
         Args:
-            key: The key of the value to get.
-            default_value: The optional default value to return if the key is not found.
+            args: The key of the value to get, and an optional default value.
 
         Returns:
-            The value at the given key, or the default value.
+            The value at the given key, or the default value or `None`.
         """
+        key, *default_value = args
         with self.doc.transaction():
             if key in self.keys():
                 return self[key]
-            return default_value
+            if not default_value:
+                return None
+            return default_value[0]
 
-    def pop(self, *args: Any) -> Any:
+    @overload
+    def pop(self, key: str) -> T: ...
+
+    @overload
+    def pop(self, key: str, default_value: T_DefaultValue) -> T | T_DefaultValue: ...
+
+    def pop(self, *args):
         """
         Removes the entry at the given key from the map, and returns the corresponding value.
 
@@ -231,7 +248,7 @@ class Map(BaseType):
             del self[key]
             return res
 
-    def _check_key(self, key: str):
+    def _check_key(self, key: str) -> None:
         if not isinstance(key, str):
             raise RuntimeError("Key must be of type string")
         if key not in self.keys():
@@ -245,7 +262,7 @@ class Map(BaseType):
         with self.doc.transaction() as txn:
             return iter(self.integrated.keys(txn._txn))
 
-    def values(self) -> Iterable[Any]:
+    def values(self) -> Iterable[T]:
         """
         Returns:
             An iterable over the values of the map.
@@ -254,7 +271,7 @@ class Map(BaseType):
             for k in self.integrated.keys(txn._txn):
                 yield self[k]
 
-    def items(self) -> Iterable[tuple[str, Any]]:
+    def items(self) -> Iterable[tuple[str, T]]:
         """
         Returns:
             An iterable over the key-value pairs of the map.
@@ -271,7 +288,7 @@ class Map(BaseType):
             for k in self.integrated.keys(txn._txn):
                 del self[k]
 
-    def update(self, value: dict[str, Any]) -> None:
+    def update(self, value: dict[str, T]) -> None:
         """
         Sets entries in the map from all entries in the passed `dict`.
 
