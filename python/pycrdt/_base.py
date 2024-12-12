@@ -222,6 +222,7 @@ class BaseEvent:
 
     def __str__(self):
         str_list = []
+        slot: Any
         for slot in self.__slots__:
             val = str(getattr(self, slot))
             str_list.append(f"{slot}: {val}")

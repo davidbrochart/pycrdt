@@ -57,7 +57,7 @@ jobs:
       run: pip install -e ".[test]"
 
     - name: Check types
-      run: mypy python
+      run: mypy --check-untyped-defs python
 
     - name: Run tests
       if: ${{ !((matrix.python-version == '3.13') && (matrix.os == 'ubuntu')) }}
