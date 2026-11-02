@@ -1,7 +1,8 @@
 # Version history
 
-## 0.14.12
+## 0.14.13
 
+- Stop publishing 32-bit wheels.
 - Fix update stream closure during provider shutdown.
 
 ## 0.14.10
