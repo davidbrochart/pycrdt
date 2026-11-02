@@ -1,5 +1,9 @@
 # Version history
 
+## 0.14.11
+
+- Fix update stream closure during provider shutdown.
+
 ## 0.14.10
 
 - Fix cross-thread cleanup and invalidate borrowed callback views.
