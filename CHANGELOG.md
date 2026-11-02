@@ -1,6 +1,6 @@
 # Version history
 
-## 0.14.11
+## 0.14.12
 
 - Fix update stream closure during provider shutdown.
 
