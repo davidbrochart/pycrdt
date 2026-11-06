@@ -232,6 +232,61 @@ def test_api():
     assert array.to_py() is None
 
 
+@pytest.mark.parametrize(
+    "key",
+    [
+        slice(-2, None),
+        slice(None, -1),
+        slice(-4, -1),
+        slice(2, 100),
+        slice(100, None),
+        slice(3, 1),
+        slice(None, None, 2),
+        slice(None, None, -1),
+        slice(4, 0, -2),
+    ],
+    ids=repr,
+)
+@pytest.mark.parametrize("ref", [[], [0, 1, 2, 3, 4]], ids=["empty", "nonempty"])
+def test_get_slice(key: slice, ref: list[int]):
+    doc = Doc()
+    doc["array"] = array = Array(ref)
+
+    assert array[key] == ref[key]
+
+
+@pytest.mark.parametrize("values", [[], [0, 1, 2, 3, 4]], ids=["empty", "nonempty"])
+def test_get_slice_zero_step(values: list[int]):
+    doc = Doc()
+    doc["array"] = array = Array(values)
+
+    with pytest.raises(ValueError, match="slice step cannot be zero"):
+        array[::0]
+
+    assert array.to_py() == values
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        slice(2, 100),
+        slice(5, None),
+        slice(100, None),
+        slice(3, 1),
+    ],
+    ids=repr,
+)
+@pytest.mark.parametrize("ref", [[], [0, 1, 2, 3, 4]], ids=["empty", "nonempty"])
+def test_del_slice_out_of_range(key: slice, ref: list[int]):
+    ref = ref.copy()
+    doc = Doc()
+    doc["array"] = array = Array(ref)
+
+    del array[key]
+    del ref[key]
+    assert array.to_py() == ref
+
+
 def test_to_py():
     doc = Doc()
     submap = Map({"foo": "bar"})
