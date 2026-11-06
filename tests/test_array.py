@@ -287,6 +287,25 @@ def test_del_slice_out_of_range(key: slice, ref: list[int]):
     assert array.to_py() == ref
 
 
+@pytest.mark.parametrize("action", ["append", "replace"])
+@pytest.mark.parametrize(
+    "value,exception",
+    [(2**63, OverflowError), ([object()], TypeError)],
+    ids=["too-large-int", "nested-unsupported"],
+)
+def test_unsupported_value(action, value, exception):
+    doc = Doc()
+    doc["array"] = array = Array([0])
+
+    with pytest.raises(exception):
+        if action == "append":
+            array.append(value)
+        else:
+            array[0] = value
+
+    assert array.to_py() == [0]
+
+
 def test_getitem_wrong_type():
     doc = Doc()
     doc["array"] = array = Array([0, 1])
