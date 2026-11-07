@@ -2,6 +2,7 @@ import gc
 import weakref
 
 import pytest
+from anyio import fail_after
 from pycrdt import Array, Doc, Map, Text, XmlFragment, XmlText
 
 
@@ -161,3 +162,90 @@ def test_abandoned_event_stream_gc(subdocs, async_transactions):
     gc.collect()
     assert stream_ref() is None
     assert doc_ref() is None
+
+
+@pytest.mark.parametrize("cls", [Text, Map, Array, XmlFragment])
+@pytest.mark.parametrize("method", ["observe", "observe_deep"])
+def test_callback_retaining_temporary_wrapper_survives_gc(cls, method):
+    doc = Doc()
+    calls = []
+
+    def watch():
+        target = doc.get("value", type=cls)
+        getattr(target, method)(lambda event: calls.append(str(target)))
+        return weakref.ref(target)
+
+    target_ref = watch()
+    change_target(doc["value"])
+    gc.collect()
+    gc.collect()
+    assert target_ref() is not None
+    change_target(doc["value"])
+    assert len(calls) == 2
+
+    # Unsubscribe through another wrapper of the same shared type.
+    subscription = doc._subscriptions[-1]
+    doc["value"].unobserve(subscription)
+    gc.collect()
+    assert target_ref() is None
+    change_target(doc["value"])
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("method", ["observe", "observe_deep"])
+def test_temporary_wrapper_subscription_survives_gc(method):
+    doc = Doc({"text": Text()})
+    calls = []
+    getattr(doc["text"], method)(lambda event: calls.append(True))
+    gc.collect()
+    gc.collect()
+    change_target(doc["text"])
+    assert calls == [True]
+
+
+@pytest.mark.parametrize("method", ["observe", "observe_deep"])
+def test_bound_method_owner_survives_while_doc_is_alive(method):
+    class Room:
+        def __init__(self, doc):
+            self.doc = doc
+            self.calls = 0
+            self.subscription = getattr(doc.get("text", type=Text), method)(self.on_change)
+
+        def on_change(self, event):
+            self.calls += 1
+
+    doc = Doc()
+    room = Room(doc)
+    room_ref = weakref.ref(room)
+    doc_ref = weakref.ref(doc)
+    del room
+    gc.collect()
+    gc.collect()
+    assert room_ref() is not None
+    change_target(doc["text"])
+    assert room_ref().calls == 1
+
+    del doc
+    gc.collect()
+    gc.collect()
+    assert room_ref() is None
+    assert doc_ref() is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("cls", [Text, Map, Array, XmlFragment])
+@pytest.mark.parametrize("deep", [False, True])
+async def test_event_stream_on_temporary_wrapper_survives_gc(cls, deep):
+    doc = Doc({"value": cls()})
+    async with doc["value"].events(deep=deep) as events:
+        gc.collect()
+        gc.collect()
+        change_target(doc["value"])
+        with fail_after(1):
+            event = await events.receive()
+        if deep:
+            event = event[0]
+        assert event.target.doc is doc
+
+    # Shared-type streams detach closed receivers on the next change.
+    change_target(doc["value"])
