@@ -56,10 +56,7 @@ class UndoManager:
             try:
                 last_timestamp = timestamp()
             except Exception as exc:
-                collector = _callback_exceptions.get()
-                if collector is None:
-                    collector = exceptions
-                collector.append(exc)
+                _callback_exceptions.get(exceptions).append(exc)
             return last_timestamp
 
         self._undo_manager = _UndoManager(

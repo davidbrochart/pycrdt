@@ -13,9 +13,7 @@ if TYPE_CHECKING:
     from ._doc import Doc
 
 
-_callback_exceptions: ContextVar[list[Exception] | None] = ContextVar(
-    "callback_exceptions", default=None
-)
+_callback_exceptions: ContextVar[list[Exception]] = ContextVar("callback_exceptions")
 
 
 class Transaction:
