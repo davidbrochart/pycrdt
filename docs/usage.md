@@ -403,10 +403,12 @@ from pycrdt import AsyncDoc, Text
 
 doc = await AsyncDoc.create({"text": Text("Hello")})
 
+
 def edit(doc, suffix):
     with doc.transaction(origin="edit"):
         doc["text"] += suffix
         return str(doc["text"])
+
 
 text = await doc.run_sync(edit, ", World")
 update = await doc.get_update()
