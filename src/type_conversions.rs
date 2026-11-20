@@ -2,6 +2,7 @@ use crate::thread_affinity::CallbackLifetime;
 use pyo3::prelude::*;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::{PyTypeError, PyValueError};
+use pyo3::sync::critical_section::with_critical_section;
 use pyo3::types::{PyAny, PyBool, PyByteArray, PyBytes, PyDict, PyFloat, PyIterator, PyList, PyInt, PyString, PyTuple};
 use serde_json::Value;
 use yrs::types::{Attrs, Change, EntryChange, Delta, Events, Path, PathSegment};
@@ -228,6 +229,12 @@ pub fn py_to_any<'py>(value: &Bound<'py, PyAny>) -> PyResult<Any> {
     } else if value.is_instance_of::<PyBytes>() {
         let v: &[u8] = value.extract()?;
         Ok(Any::Buffer(v.into()))
+    } else if let Ok(v) = value.cast::<PyByteArray>() {
+        // binary values are read back as bytearray
+        Ok(Any::Buffer(with_critical_section(&v, || {
+            // SAFETY: like in PyByteArray::to_vec, copying the bytes doesn't call Python
+            unsafe { v.as_bytes() }.into()
+        })))
     } else if value.is_instance_of::<PyString>() {
         let v: &str = value.extract()?;
         Ok(Any::String(v.into()))
