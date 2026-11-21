@@ -133,6 +133,9 @@ class BaseDoc:
     def _forget_removed_subdocs(self) -> None:
         # Called after a commit, while holding the transaction lock. Yrs destroys
         # the subdocuments that are removed, with their observers.
+        inserted = self._inserted_subdocs
+        if inserted:
+            self._inserted_subdocs = []
         if self._subdoc_changes is None:
             if not self._new_subdocs:
                 return
@@ -142,22 +145,25 @@ class BaseDoc:
             if self._subdoc_changes is not None:
                 self._check_new_subdocs()
             return
-        added, removed = self._subdoc_changes.take()
-        for doc in removed:
-            self._forget_subdoc(doc)
-        for doc in added:
-            subdoc = self._find_subdoc(doc)
-            if subdoc is not None:
-                self._new_subdocs.pop(id(subdoc), None)
-        for subdoc in self._inserted_subdocs:
+        changes = self._subdoc_changes.take()
+        if changes is not None:
+            added, removed = changes
+            for doc in removed:
+                self._forget_subdoc(doc)
+            for doc in added:
+                subdoc = self._find_subdoc(doc)
+                if subdoc is not None:
+                    self._new_subdocs.pop(id(subdoc), None)
+        for subdoc in inserted:
             if id(subdoc) in self._new_subdocs:
                 # inserted and removed in the same transaction
                 self._forget_subdoc(subdoc._doc)
-        self._inserted_subdocs.clear()
         # The other new subdocuments were accessed, which happens when they were already in
         # this document, unless they were also added and removed by the same transaction.
-        # Check them when there are as many as the other kept subdocuments.
-        if len(self._new_subdocs) >= max(16, self._subdoc_nb - len(self._new_subdocs)):
+        # Check them when there are as many as the other kept subdocuments, so that each
+        # subdocument of this document is checked a constant number of times on average.
+        new_nb = len(self._new_subdocs)
+        if new_nb and new_nb >= self._subdoc_nb - new_nb:
             self._check_new_subdocs()
 
     def _check_new_subdocs(self) -> None:
@@ -170,7 +176,6 @@ class BaseDoc:
             if not in_doc:
                 self._forget_subdoc(subdoc._doc)
         self._new_subdocs.clear()
-        self._inserted_subdocs.clear()
 
 
 class BaseType(ABC):

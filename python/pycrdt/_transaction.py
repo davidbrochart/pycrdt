@@ -77,8 +77,9 @@ class Transaction:
         # since nested transactions reuse the root transaction
         if self._leases == 0:
             assert self._txn is not None
+            read_only = isinstance(self, ReadTransaction)
             try:
-                if not isinstance(self, ReadTransaction):
+                if not read_only:
                     try:
                         self._txn.commit()
                     finally:
@@ -96,11 +97,11 @@ class Transaction:
                     self._txn.drop()
                     self._txn = None
                     self._doc._txn = None
-                    if not isinstance(self, ReadTransaction):
+                    if not read_only:
                         # before another thread can access the subdocuments
                         self._doc._forget_removed_subdocs()
                 finally:
-                    if not isinstance(self, ReadTransaction) and self._doc._allow_multithreading:
+                    if not read_only and self._doc._allow_multithreading:
                         self._doc._txn_lock.release()
 
     async def __aenter__(self, _acquire_transaction: bool = True) -> Self:

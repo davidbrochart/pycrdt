@@ -1,6 +1,7 @@
 import gc
 import weakref
 from contextlib import nullcontext
+from threading import Thread
 
 import pytest
 from anyio import fail_after
@@ -273,45 +274,28 @@ def test_subdocs_in_document_are_kept():
     assert calls == [True]
 
 
-def test_replacing_subdocs_does_not_check_the_other_subdocs(monkeypatch):
-    doc = Doc({"map": Map({f"subdoc{i}": Doc() for i in range(100)})})
-    remote_doc = Doc()
-    remote_doc.apply_update(doc.get_update())
-    remote_map = remote_doc.get("map", type=Map)
-    remote_map["subdoc"] = Doc()
-    checks = []
-    check_new_subdocs = Doc._check_new_subdocs
+def test_subdocs_are_forgotten_while_holding_the_transaction_lock():
+    doc = Doc({"map": Map({"subdoc": Doc()})}, allow_multithreading=True)
+    results = []
 
-    def check(doc):
-        checks.append(True)
-        check_new_subdocs(doc)
+    def new_transaction():
+        try:
+            with doc.new_transaction(timeout=0.1):
+                results.append("acquired")  # pragma: no cover
+        except TimeoutError:
+            results.append("timeout")
 
-    monkeypatch.setattr(Doc, "_check_new_subdocs", check)
-    for _ in range(100):
-        remote_map["subdoc"] = Doc()
+    def on_collect(ref):
+        # another thread cannot start a transaction while the subdocument is forgotten
+        thread = Thread(target=new_transaction)
+        thread.start()
+        thread.join()
 
-    assert checks == []
-    # the subdocuments that are accessed for the first time are checked
-    for i in range(100):
-        remote_map[f"subdoc{i}"]
-    assert checks
-
-
-def test_subdocs_are_forgotten_while_holding_the_transaction_lock(monkeypatch):
-    doc = Doc(allow_multithreading=True)
-    locked = []
-    forget_removed_subdocs = Doc._forget_removed_subdocs
-
-    def forget(doc):
-        locked.append(doc._txn_lock.locked())
-        forget_removed_subdocs(doc)
-
-    monkeypatch.setattr(Doc, "_forget_removed_subdocs", forget)
-    doc["map"] = Map({"subdoc": Doc()})
+    subdoc_ref = weakref.ref(doc["map"]["subdoc"], on_collect)
     del doc["map"]["subdoc"]
 
-    assert locked
-    assert all(locked)
+    assert subdoc_ref() is None
+    assert results == ["timeout"]
 
 
 @pytest.mark.parametrize("method", ["observe", "observe_deep"])

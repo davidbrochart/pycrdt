@@ -348,12 +348,16 @@ pub struct SubdocChanges {
 
 #[pymethods]
 impl SubdocChanges {
-    fn take(&self) -> (Vec<Doc>, Vec<Doc>) {
-        let (added, removed) = std::mem::take(&mut *self.changes.lock().unwrap());
-        (
+    fn take(&self) -> Option<(Vec<Doc>, Vec<Doc>)> {
+        let mut changes = self.changes.lock().unwrap();
+        if changes.0.is_empty() && changes.1.is_empty() {
+            return None;
+        }
+        let (added, removed) = std::mem::take(&mut *changes);
+        Some((
             added.into_iter().map(Doc::from).collect(),
             removed.into_iter().map(Doc::from).collect(),
-        )
+        ))
     }
 }
 

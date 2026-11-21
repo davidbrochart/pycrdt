@@ -111,8 +111,8 @@ class TransactionEvent:
 class SubdocChanges:
     """The subdocuments added and removed since they were last taken."""
 
-    def take(self) -> tuple[list[Doc], list[Doc]]:
-        """Returns the added and removed subdocuments, and forgets them."""
+    def take(self) -> tuple[list[Doc], list[Doc]] | None:
+        """Returns and forgets the added and removed subdocuments, or None if there are none."""
 
 class SubdocsEvent:
     """
