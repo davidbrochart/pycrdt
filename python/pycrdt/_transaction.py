@@ -9,6 +9,7 @@ from anyio import create_task_group, to_thread
 from ._pycrdt import Transaction as _Transaction
 
 if TYPE_CHECKING:
+    from ._base import BaseDoc
     from ._doc import Doc
 
 
@@ -93,16 +94,19 @@ class Transaction:
                         self._doc._exceptions.clear()
                         raise ExceptionGroup("Observer callback error", exceptions)
             finally:
+                evicted: list[BaseDoc] = []
                 try:
                     self._txn.drop()
                     self._txn = None
                     self._doc._txn = None
                     if not read_only:
                         # before another thread can access the subdocuments
-                        self._doc._forget_removed_subdocs()
+                        self._doc._forget_removed_subdocs(evicted)
                 finally:
                     if not read_only and self._doc._allow_multithreading:
                         self._doc._txn_lock.release()
+                    # Weakref callbacks and finalizers can open another transaction.
+                    evicted.clear()
 
     async def __aenter__(self, _acquire_transaction: bool = True) -> Self:
         if self._leases == 0:

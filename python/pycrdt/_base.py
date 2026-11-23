@@ -118,11 +118,12 @@ class BaseDoc:
         self._subdoc_nb += 1
         self._new_subdocs[id(subdoc)] = subdoc
 
-    def _forget_subdoc(self, doc: _Doc) -> None:
+    def _forget_subdoc(self, doc: _Doc, evicted: list[BaseDoc]) -> None:
         guid = doc.guid()
         subdocs = self._subdocs.get(guid, [])
         for index, subdoc in enumerate(subdocs):
             if subdoc._doc.is_same(doc):
+                evicted.append(subdoc)
                 del subdocs[index]
                 if not subdocs:
                     del self._subdocs[guid]
@@ -130,7 +131,7 @@ class BaseDoc:
                 self._new_subdocs.pop(id(subdoc), None)
                 return
 
-    def _forget_removed_subdocs(self) -> None:
+    def _forget_removed_subdocs(self, evicted: list[BaseDoc]) -> None:
         # Called after a commit, while holding the transaction lock. Yrs destroys
         # the subdocuments that are removed, with their observers.
         inserted = self._inserted_subdocs
@@ -143,13 +144,13 @@ class BaseDoc:
             # were committed before cannot be known, so check the subdocuments instead.
             self._subdoc_changes = self._doc.track_subdocs()
             if self._subdoc_changes is not None:
-                self._check_new_subdocs()
+                self._check_new_subdocs(evicted)
             return
         changes = self._subdoc_changes.take()
         if changes is not None:
             added, removed = changes
             for doc in removed:
-                self._forget_subdoc(doc)
+                self._forget_subdoc(doc, evicted)
             for doc in added:
                 subdoc = self._find_subdoc(doc)
                 if subdoc is not None:
@@ -157,16 +158,16 @@ class BaseDoc:
         for subdoc in inserted:
             if id(subdoc) in self._new_subdocs:
                 # inserted and removed in the same transaction
-                self._forget_subdoc(subdoc._doc)
+                self._forget_subdoc(subdoc._doc, evicted)
         # The other new subdocuments were accessed, which happens when they were already in
         # this document, unless they were also added and removed by the same transaction.
         # Check them when there are as many as the other kept subdocuments, so that each
         # subdocument of this document is checked a constant number of times on average.
         new_nb = len(self._new_subdocs)
         if new_nb and new_nb >= self._subdoc_nb - new_nb:
-            self._check_new_subdocs()
+            self._check_new_subdocs(evicted)
 
-    def _check_new_subdocs(self) -> None:
+    def _check_new_subdocs(self, evicted: list[BaseDoc]) -> None:
         subdocs = list(self._new_subdocs.values())
         found = self._doc.contains_subdocs([subdoc._doc for subdoc in subdocs])
         if found is None:  # pragma: no cover
@@ -174,7 +175,7 @@ class BaseDoc:
             return
         for subdoc, in_doc in zip(subdocs, found):
             if not in_doc:
-                self._forget_subdoc(subdoc._doc)
+                self._forget_subdoc(subdoc._doc, evicted)
         self._new_subdocs.clear()
 
 

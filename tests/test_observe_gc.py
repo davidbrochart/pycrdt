@@ -1,7 +1,6 @@
 import gc
 import weakref
 from contextlib import nullcontext
-from threading import Thread
 
 import pytest
 from anyio import fail_after
@@ -274,28 +273,22 @@ def test_subdocs_in_document_are_kept():
     assert calls == [True]
 
 
-def test_subdocs_are_forgotten_while_holding_the_transaction_lock():
+def test_evicted_subdocs_are_collected_after_releasing_the_transaction_lock():
     doc = Doc({"map": Map({"subdoc": Doc()})}, allow_multithreading=True)
     results = []
 
-    def new_transaction():
-        try:
-            with doc.new_transaction(timeout=0.1):
-                results.append("acquired")  # pragma: no cover
-        except TimeoutError:
-            results.append("timeout")
-
     def on_collect(ref):
-        # another thread cannot start a transaction while the subdocument is forgotten
-        thread = Thread(target=new_transaction)
-        thread.start()
-        thread.join()
+        try:
+            with doc.new_transaction(timeout=0):
+                results.append("subdoc" in doc["map"])
+        except TimeoutError:
+            results.append("lock held")
 
     subdoc_ref = weakref.ref(doc["map"]["subdoc"], on_collect)
     del doc["map"]["subdoc"]
 
     assert subdoc_ref() is None
-    assert results == ["timeout"]
+    assert results == [False]
 
 
 @pytest.mark.parametrize("method", ["observe", "observe_deep"])
