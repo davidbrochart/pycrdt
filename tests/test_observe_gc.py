@@ -278,11 +278,8 @@ def test_evicted_subdocs_are_collected_after_releasing_the_transaction_lock():
     results = []
 
     def on_collect(ref):
-        try:
-            with doc.new_transaction(timeout=0):
-                results.append("subdoc" in doc["map"])
-        except TimeoutError:
-            results.append("lock held")
+        with doc.new_transaction(timeout=0):
+            results.append("subdoc" in doc["map"])
 
     subdoc_ref = weakref.ref(doc["map"]["subdoc"], on_collect)
     del doc["map"]["subdoc"]
