@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextvars import ContextVar
 from functools import partial
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Self
@@ -10,6 +11,9 @@ from ._pycrdt import Transaction as _Transaction
 
 if TYPE_CHECKING:
     from ._doc import Doc
+
+
+_callback_exceptions: ContextVar[list[BaseException]] = ContextVar("callback_exceptions")
 
 
 class Transaction:
@@ -80,7 +84,15 @@ class Transaction:
             try:
                 if not isinstance(self, ReadTransaction):
                     try:
-                        self._txn.commit()
+                        token = _callback_exceptions.set(self._doc._exceptions)
+                        try:
+                            self._txn.commit()
+                        finally:
+                            _callback_exceptions.reset(token)
+                            # Drain errors before releasing the transaction, even
+                            # when commit propagates an uncaught callback error.
+                            exceptions = tuple(self._doc._exceptions)
+                            self._doc._exceptions.clear()
                     finally:
                         # release the transaction even if an observer callback raised
                         # an exception that is not caught (e.g. KeyboardInterrupt)
@@ -89,10 +101,8 @@ class Transaction:
                             del self._doc._origins[origin_hash]
                         if self._doc._allow_multithreading:
                             self._doc._txn_lock.release()
-                    if self._doc._exceptions:
-                        exceptions = tuple(self._doc._exceptions)
-                        self._doc._exceptions.clear()
-                        raise ExceptionGroup("Observer callback error", exceptions)
+                    if exceptions:
+                        raise BaseExceptionGroup("Observer callback error", exceptions)
             finally:
                 self._txn.drop()
                 self._txn = None
