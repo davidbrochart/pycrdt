@@ -4,7 +4,7 @@ from functools import partial
 
 import pytest
 from anyio import Event, create_task_group, fail_after, sleep, to_thread
-from pycrdt import Array, Doc, Map, Text, XmlFragment
+from pycrdt import Array, Doc, Map, ReadTransaction, Text, TextEvent, XmlFragment
 
 pytestmark = pytest.mark.anyio
 
@@ -58,9 +58,9 @@ def test_origin():
     origin0 = Origin()
     origin1 = None
 
-    def callback(event, txn):
+    def callback(event):
         nonlocal origin1
-        origin1 = txn.origin
+        origin1 = event.transaction.origin
 
     text.observe(callback)
 
@@ -106,36 +106,41 @@ def test_origin():
     assert str(excinfo.value) == "Nested transactions must have same origin as root transaction"
 
 
-def test_observe_callback_params():
+@pytest.mark.parametrize("method", ["observe", "observe_deep"])
+def test_observe_callback_params(method):
+    doc = Doc()
+    doc["text"] = text = Text()
+    calls = []
+
+    def callback(event, *args, **kwargs):
+        calls.append((event, args, kwargs))
+
+    sub = getattr(text, method)(callback)  # noqa: F841
+    text += "Hello"
+
+    assert len(calls) == 1
+    event, args, kwargs = calls[0]
+    assert args == ()
+    assert kwargs == {}
+    if method == "observe_deep":
+        assert len(event) == 1
+        event = event[0]
+    assert isinstance(event, TextEvent)
+    assert isinstance(event.transaction, ReadTransaction)
+
+
+@pytest.mark.parametrize("method", ["observe", "observe_deep"])
+def test_observe_callback_with_transaction_param(method):
     doc = Doc()
     doc["text"] = text = Text()
 
-    cb0_called = False
-    cb1_called = False
-    cb2_called = False
+    # the transaction is available as event.transaction
+    sub = getattr(text, method)(lambda event, txn: None)  # noqa: F841
+    with pytest.raises(ExceptionGroup) as excinfo:
+        text += "Hello"
 
-    def callback0():
-        nonlocal cb0_called
-        cb0_called = True
-
-    def callback1(event):
-        nonlocal cb1_called
-        cb1_called = True
-
-    def callback2(event, txn):
-        nonlocal cb2_called
-        cb2_called = True
-
-    text.observe(callback0)
-    text.observe(callback1)
-    text.observe(callback2)
-
-    with doc.transaction():
-        text += "Hello, World!"
-
-    assert cb0_called
-    assert cb1_called
-    assert cb2_called
+    assert len(excinfo.value.exceptions) == 1
+    assert isinstance(excinfo.value.exceptions[0], TypeError)
 
 
 def create_new_transaction(map0: Map, key: str, val: str) -> None:
@@ -442,6 +447,23 @@ def raise_once(exception, raised, event):
     if not raised:
         raised.append(None)
         raise exception
+
+
+def test_observer_errors_do_not_leak_after_keyboard_interrupt():
+    doc = Doc()
+    map0 = doc.get("map0", type=Map)
+    raised = []
+    map_subscription = map0.observe(partial(raise_once, ZeroDivisionError(), raised))
+    doc_subscription = doc.observe(partial(raise_once, KeyboardInterrupt(), []))
+
+    with pytest.raises(KeyboardInterrupt):
+        map0["key"] = "value"
+    assert raised
+
+    map0.unobserve(map_subscription)
+    doc.unobserve(doc_subscription)
+    with doc.transaction():
+        pass
 
 
 @pytest.mark.parametrize("origin", [None, "test-origin"])

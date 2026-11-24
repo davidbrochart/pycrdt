@@ -1,4 +1,8 @@
+import subprocess
+import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from textwrap import dedent
 
 import pytest
 from pycrdt import Array, Doc, IdSet, Map, StackItem, Text, UndoManager
@@ -169,8 +173,8 @@ def test_origin_in_observer_during_undo_redo():
     assert other_manager.origin != origin
     origins = []
 
-    def callback(event, txn):
-        origins.append(txn.origin)
+    def callback(event):
+        origins.append(event.transaction.origin)
 
     text.observe(callback)
     text += "Hello"
@@ -205,6 +209,194 @@ def test_timestamp():
     undo_manager.undo()
     assert str(text) == "a"
     assert timestamp_called == 4
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("async_transaction", [False, True])
+async def test_timestamp_exceptions(async_transaction):
+    doc = Doc()
+    text = doc.get("text", type=Text)
+    error = ValueError("clock failed")
+    fail = True
+
+    def clock():
+        if fail:
+            raise error
+        return 1
+
+    manager = UndoManager(timestamp=clock)
+    manager.expand_scope(text)
+    observed = []
+
+    def observer(event):
+        observed.append(event)
+        raise RuntimeError("observer failed")
+
+    subscription = doc.observe(observer)
+    with pytest.RaisesGroup(ValueError, RuntimeError) as exc_info:
+        if async_transaction:
+            async with doc.transaction():
+                text += "a"
+                assert not observed
+        else:
+            with doc.transaction():
+                text += "a"
+                assert not observed
+
+    assert exc_info.group_contains(ValueError, match="clock failed")
+    assert len(observed) == 1
+    assert exc_info.group_contains(RuntimeError, match="observer failed")
+    assert str(text) == "a"
+    assert doc._txn is None
+    assert not doc._exceptions
+    doc.unobserve(subscription)
+    fail = False
+    text += "b"
+    assert str(text) == "ab"
+    assert manager.undo()
+    assert str(text) == "a"
+
+
+@pytest.mark.parametrize(
+    ("invalid", "error_type"),
+    [(1.5, TypeError), (-1, OverflowError), (2**64, OverflowError), (None, KeyboardInterrupt)],
+)
+def test_timestamp_invalid_result_or_interrupt(invalid, error_type):
+    doc = Doc()
+    text = doc.get("text", type=Text)
+    timestamps = iter([1, invalid, 2])
+
+    def clock():
+        value = next(timestamps)
+        if value is None:
+            raise KeyboardInterrupt
+        return value
+
+    manager = UndoManager(scopes=[text], timestamp=clock)
+    observed = []
+    doc.observe(observed.append)
+    text += "a"
+    with pytest.RaisesGroup(error_type):
+        text += "b"
+    text += "c"
+    assert len(observed) == 3
+    assert len(manager.undo_stack) == 1
+
+
+@pytest.mark.parametrize("first_timestamp", [1, 1.5])
+def test_timestamp_preserves_pending_observer_interrupt(first_timestamp):
+    doc = Doc()
+    text = doc.get("text", type=Text)
+    timestamps = iter([first_timestamp, 2])
+
+    def interrupt(event):
+        raise KeyboardInterrupt
+
+    subscription = text.observe(interrupt)
+    manager = UndoManager(scopes=[text], timestamp=lambda: next(timestamps))
+    with pytest.raises(KeyboardInterrupt):
+        text += "a"
+    text.unobserve(subscription)
+    with doc.transaction():
+        pass
+    text += "b"
+    assert manager.can_undo()
+
+
+def test_timestamp_exceptions_multiple_docs():
+    docs = [Doc(), Doc()]
+    texts = [doc.get("text", type=Text) for doc in docs]
+
+    def clock():
+        raise ValueError("clock failed")
+
+    manager = UndoManager(scopes=texts, timestamp=clock)
+    with docs[0].transaction():
+        with pytest.RaisesGroup(ValueError):
+            texts[1] += "a"
+        assert not docs[0]._exceptions
+    with pytest.RaisesGroup(ValueError):
+        texts[0] += "b"
+    assert manager.can_undo()
+
+
+def test_timestamp_exceptions_nested_commits():
+    docs = [Doc(), Doc()]
+    texts = [doc.get("text", type=Text) for doc in docs]
+
+    def clock():
+        raise ValueError("clock failed")
+
+    manager = UndoManager(scopes=texts, timestamp=clock)
+    inner_errors = []
+
+    def observer(event):
+        outer_errors = list(docs[0]._exceptions)
+        with pytest.RaisesGroup(ValueError) as exc_info:
+            texts[1] += "inner"
+        inner_errors.append(exc_info.value)
+        assert docs[0]._exceptions == outer_errors
+
+    docs[0].observe(observer)
+    with pytest.RaisesGroup(ValueError):
+        texts[0] += "outer"
+    assert len(inner_errors) == 1
+    assert all(not doc._exceptions for doc in docs)
+    assert [str(text) for text in texts] == ["outer", "inner"]
+    assert manager.can_undo()
+
+
+def test_timestamp_exceptions_concurrent_commits():
+    barrier = threading.Barrier(2, timeout=5)
+    docs = [Doc(), Doc()]
+    texts = [doc.get("text", type=Text) for doc in docs]
+
+    def clock(index):
+        barrier.wait()
+        raise ValueError(f"clock {index} failed")
+
+    managers = [
+        UndoManager(scopes=[text], timestamp=lambda index=index: clock(index))
+        for index, text in enumerate(texts)
+    ]
+
+    def edit(index):
+        with pytest.RaisesGroup(ValueError) as exc_info:
+            texts[index] += "a"
+        return exc_info.value
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(edit, index) for index in range(2)]
+        errors = [future.result(timeout=10) for future in futures]
+
+    for index, error in enumerate(errors):
+        assert str(error.exceptions[0]) == f"clock {index} failed"
+        assert not docs[index]._exceptions
+        assert managers[index].can_undo()
+
+
+def test_timestamp_exceptions_undo_redo():
+    doc = Doc()
+    text = doc.get("text", type=Text)
+    fail = False
+
+    def clock():
+        if fail:
+            raise ValueError("clock failed")
+        return 10
+
+    manager = UndoManager(scopes=[text], timestamp=clock)
+    text += "a"
+    fail = True
+    with pytest.RaisesGroup(ValueError, match="Timestamp callback error"):
+        manager.undo()
+    assert str(text) == ""
+    with pytest.RaisesGroup(ValueError, match="Timestamp callback error"):
+        manager.redo()
+    assert str(text) == "a"
+    fail = False
+    assert manager.undo()
+    assert str(text) == ""
 
 
 def test_reset():
@@ -703,6 +895,65 @@ def test_undo_while_another_thread_holds_transaction():
     assert len(undo_manager.undo_stack) == 1
     assert undo_manager.undo()
     assert str(text) == ""
+
+
+def test_clear_in_transaction():
+    # A deadlock can hold the GIL, so enforce the timeout from another process.
+    code = dedent(
+        """
+        import threading
+
+        import pytest
+        from pycrdt import Doc, Text, UndoManager
+
+        doc = Doc(allow_multithreading=True)
+        doc["text"] = text = Text()
+        undo_manager = UndoManager(scopes=[text], capture_timeout_millis=0)
+        with doc.transaction():
+            undo_manager.clear()  # nothing to clear
+        text += "Hello"
+
+        with doc.transaction():
+            with pytest.raises(RuntimeError, match="Cannot acquire transaction"):
+                undo_manager.clear()
+
+        errors = []
+
+        def callback(event):
+            try:
+                undo_manager.clear()
+            except RuntimeError as exc:
+                errors.append(str(exc))
+
+        sub = text.observe(callback)
+        text += ", World!"
+        text.unobserve(sub)
+        assert errors == ["Cannot acquire transaction"]
+
+        in_transaction = threading.Event()
+        done = threading.Event()
+
+        def hold_transaction():
+            with doc.new_transaction():
+                in_transaction.set()
+                done.wait()
+
+        thread = threading.Thread(target=hold_transaction)
+        thread.start()
+        in_transaction.wait()
+        try:
+            with pytest.raises(RuntimeError, match="Cannot acquire transaction"):
+                undo_manager.clear()
+        finally:
+            done.set()
+            thread.join()
+
+        assert len(undo_manager.undo_stack) == 2
+        undo_manager.clear()
+        assert len(undo_manager.undo_stack) == 0
+        """
+    )
+    subprocess.run([sys.executable, "-c", code], check=True, timeout=10)
 
 
 def test_expand_scope_in_transaction():

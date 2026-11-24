@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from operator import index
 from time import time_ns
 from typing import Any, Callable
 
@@ -10,7 +11,7 @@ from ._pycrdt import (
 from ._pycrdt import (
     UndoManager as _UndoManager,
 )
-from ._transaction import hash_origin
+from ._transaction import _callback_exceptions, hash_origin
 
 
 def timestamp() -> int:
@@ -38,16 +39,34 @@ class UndoManager:
         Args:
             scopes: A list of shared types the undo manager will work with.
             capture_timeout_millis: A time interval for grouping changes that will be undone/redone.
-            timestamp: A function that returns a timestamp as an integer number of milli-seconds.
+            timestamp: A function that returns a timestamp in milliseconds as an unsigned
+                64-bit integer. Callback errors are collected and raised after the transaction.
+                On failure, the last successful timestamp (initially zero) is used.
             undo_stack: Pre-filled undo stack items.
             redo_stack: Pre-filled redo stack items.
 
         Raises:
             RuntimeError: A transaction is in progress on the document of a scope.
         """
+        self._exceptions: list[BaseException] = []
+        exceptions = self._exceptions
+        last_timestamp = 0
+
+        def timestamp_callback() -> int:
+            nonlocal last_timestamp
+            try:
+                value = index(timestamp())
+                if not 0 <= value < 2**64:
+                    raise OverflowError("Timestamp must fit in an unsigned 64-bit integer")
+            except BaseException as exc:
+                _callback_exceptions.get(exceptions).append(exc)
+            else:
+                last_timestamp = value
+            return last_timestamp
+
         self._undo_manager = _UndoManager(
             capture_timeout_millis,
-            timestamp,
+            timestamp_callback,
             undo_stack or [],
             redo_stack or [],
         )
@@ -108,11 +127,19 @@ class UndoManager:
 
         Raises:
             RuntimeError: A transaction is in progress on a tracked document.
+            BaseExceptionGroup: Timestamp callback errors, raised as an ExceptionGroup
+                when all errors are Exceptions.
 
         Returns:
             True if some changes were undone.
         """
-        return self._undo_manager.undo()
+        token = _callback_exceptions.set(self._exceptions)
+        try:
+            result = self._undo_manager.undo()
+        finally:
+            _callback_exceptions.reset(token)
+        self._raise_exceptions()
+        return result
 
     def can_redo(self) -> bool:
         """
@@ -127,16 +154,33 @@ class UndoManager:
 
         Raises:
             RuntimeError: A transaction is in progress on a tracked document.
+            BaseExceptionGroup: Timestamp callback errors, raised as an ExceptionGroup
+                when all errors are Exceptions.
 
         Returns:
             True if some changes were redone.
         """
-        return self._undo_manager.redo()
+        token = _callback_exceptions.set(self._exceptions)
+        try:
+            result = self._undo_manager.redo()
+        finally:
+            _callback_exceptions.reset(token)
+        self._raise_exceptions()
+        return result
+
+    def _raise_exceptions(self) -> None:
+        if self._exceptions:
+            exceptions = tuple(self._exceptions)
+            self._exceptions.clear()
+            raise BaseExceptionGroup("Timestamp callback error", exceptions)
 
     def clear(self) -> None:
         """
         Clears all [StackItem][pycrdt.StackItem]s stored in this undo manager,
         effectively resetting its state.
+
+        Raises:
+            RuntimeError: A transaction is in progress on a tracked document.
         """
         self._undo_manager.clear_all()
 
